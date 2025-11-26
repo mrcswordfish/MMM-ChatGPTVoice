@@ -19,3 +19,316 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 5. `MMM-ChatGPTVoice.js` (updated for wake phrase “hey gpt”)
+
+Key changes:
+
+- No mic button / tap-to-talk.
+- Continuous recognition.
+- Wake phrase detection.
+- Auto-restart on `onend`.
+
+```js
+/* global Module */
+
+/**
+ * MMM-ChatGPTVoice
+ *
+ * A MagicMirror² module that listens continuously for a wake phrase
+ * like "hey gpt" and then sends the remainder of the utterance to ChatGPT.
+ */
+
+Module.register("MMM-ChatGPTVoice", {
+  // ---------------------------------------------------------------------------
+  // Default module config
+  // ---------------------------------------------------------------------------
+  defaults: {
+    apiKey: "", // SAFER: leave empty and use OPENAI_API_KEY env var on the server
+    model: "gpt-4o-mini",
+    language: "en-US",
+    wakePhrase: "hey gpt",
+    systemPrompt:
+      "You are a concise, friendly voice assistant running on a smart mirror. " +
+      "Keep answers under three sentences and speak naturally.",
+    continuous: true,       // should remain true for wake-phrase mode
+    debug: false
+  },
+
+  // ---------------------------------------------------------------------------
+  // Module lifecycle
+  // ---------------------------------------------------------------------------
+  start: function () {
+    this.recognition = null;
+    this.listening = false; // recognition running or not
+    this.autoRestart = true;
+
+    this.lastUserUtterance = "";
+    this.lastAssistantReply = "";
+    this.errorMessage = "";
+
+    // Send config to node_helper so it knows model, apiKey, etc.
+    this.sendSocketNotification("CHATGPT_CONFIG", this.config);
+  },
+
+  getStyles: function () {
+    return [this.file("MMM-ChatGPTVoice.css")];
+  },
+
+  getDom: function () {
+    const wrapper = document.createElement("div");
+    wrapper.id = "chatgpt-voice-wrapper";
+    wrapper.className = "chatgpt-voice";
+
+    // Title
+    const title = document.createElement("div");
+    title.className = "bright medium";
+    title.innerHTML = "ChatGPT Voice";
+    wrapper.appendChild(title);
+
+    // Status line
+    const status = document.createElement("div");
+    status.id = "chatgpt-voice-status";
+    status.className = "small dimmed";
+
+    if (this.errorMessage) {
+      status.innerHTML = this.errorMessage;
+    } else if (!this.recognition) {
+      status.innerHTML = "Initializing voice engine…";
+    } else if (this.listening) {
+      const wake = this.config.wakePhrase || "hey gpt";
+      status.innerHTML = "Listening for \"" + wake + "\"…";
+    } else {
+      status.innerHTML = "Voice engine stopped. (See logs / debug)";
+    }
+    wrapper.appendChild(status);
+
+    // Indicator dot (not clickable)
+    const indicator = document.createElement("div");
+    indicator.id = "chatgpt-voice-indicator";
+    indicator.className =
+      "chatgpt-voice-indicator " + (this.listening ? "listening" : "");
+    indicator.innerHTML = this.listening ? "●" : "○";
+    wrapper.appendChild(indicator);
+
+    // User utterance
+    const userLine = document.createElement("div");
+    userLine.className = "xsmall";
+    userLine.id = "chatgpt-voice-user";
+    if (this.lastUserUtterance) {
+      userLine.innerHTML =
+        "<span class='label'>You:</span> " + this.lastUserUtterance;
+    }
+    wrapper.appendChild(userLine);
+
+    // Assistant reply
+    const replyLine = document.createElement("div");
+    replyLine.className = "xsmall";
+    replyLine.id = "chatgpt-voice-reply";
+    if (this.lastAssistantReply) {
+      replyLine.innerHTML =
+        "<span class='label'>GPT:</span> " + this.lastAssistantReply;
+    }
+    wrapper.appendChild(replyLine);
+
+    return wrapper;
+  },
+
+  // ---------------------------------------------------------------------------
+  // Notifications from core
+  // ---------------------------------------------------------------------------
+  notificationReceived: function (notification, payload, sender) {
+    // Called once when all modules finished rendering
+    if (notification === "DOM_OBJECTS_CREATED") {
+      this.initializeSpeech();
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Socket notifications from node_helper
+  // ---------------------------------------------------------------------------
+  socketNotificationReceived: function (notification, payload) {
+    if (notification === "CHATGPT_REPLY") {
+      this.errorMessage = "";
+      this.lastAssistantReply = payload && payload.text ? payload.text : "";
+      this.updateDom();
+      this.speak(this.lastAssistantReply);
+    } else if (notification === "CHATGPT_ERROR") {
+      this.errorMessage =
+        "ChatGPT error: " + (payload && payload.message ? payload.message : "");
+      if (this.config.debug) {
+        // eslint-disable-next-line no-console
+        console.error("[MMM-ChatGPTVoice] ERROR:", this.errorMessage);
+      }
+      this.updateDom();
+    }
+  },
+
+  // ---------------------------------------------------------------------------
+  // Voice: Speech Recognition (browser) with wake phrase
+  // ---------------------------------------------------------------------------
+  initializeSpeech: function () {
+    if (this.recognition) {
+      return;
+    }
+
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition || null;
+
+    if (!SpeechRecognition) {
+      this.errorMessage = "Browser speech recognition not available.";
+      this.updateDom();
+      return;
+    }
+
+    const self = this;
+    const recognition = new SpeechRecognition();
+
+    recognition.lang = this.config.language || "en-US";
+    recognition.continuous = true; // force continuous for wake-phrase mode
+    recognition.interimResults = false;
+
+    recognition.onstart = function () {
+      self.listening = true;
+      self.errorMessage = "";
+      if (self.config.debug) {
+        // eslint-disable-next-line no-console
+        console.log("[MMM-ChatGPTVoice] recognition started (continuous)");
+      }
+      self.updateDom();
+    };
+
+    recognition.onresult = function (event) {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        if (res.isFinal) {
+          transcript += res[0].transcript;
+        }
+      }
+      transcript = transcript.trim();
+      if (!transcript) {
+        return;
+      }
+
+      const wakeRaw = self.config.wakePhrase || "hey gpt";
+      const wake = wakeRaw.toLowerCase();
+
+      const normalized = transcript.toLowerCase();
+      const idx = normalized.indexOf(wake);
+
+      if (idx === -1) {
+        if (self.config.debug) {
+          // eslint-disable-next-line no-console
+          console.log(
+            "[MMM-ChatGPTVoice] speech received but no wake phrase:",
+            transcript
+          );
+        }
+        return;
+      }
+
+      // Everything after the wake phrase is the user query
+      let query = transcript.substring(idx + wake.length).trim();
+
+      if (!query) {
+        // Wake phrase but no question content
+        self.lastUserUtterance = "[wake phrase detected – no query]";
+        self.updateDom();
+        if (self.config.debug) {
+          // eslint-disable-next-line no-console
+          console.log("[MMM-ChatGPTVoice] wake phrase only:", transcript);
+        }
+        return;
+      }
+
+      self.lastUserUtterance = query;
+      self.updateDom();
+
+      if (self.config.debug) {
+        // eslint-disable-next-line no-console
+        console.log(
+          "[MMM-ChatGPTVoice] wake phrase detected, sending query:",
+          query
+        );
+      }
+
+      self.sendSocketNotification("CHATGPT_QUERY", {
+        id: Date.now(),
+        text: query
+      });
+    };
+
+    recognition.onerror = function (event) {
+      self.listening = false;
+      self.errorMessage = "Speech error: " + (event.error || "unknown");
+      if (self.config.debug) {
+        // eslint-disable-next-line no-console
+        console.error("[MMM-ChatGPTVoice] recognition error:", event);
+      }
+      self.updateDom();
+    };
+
+    recognition.onend = function () {
+      self.listening = false;
+      self.updateDom();
+      if (self.config.debug) {
+        // eslint-disable-next-line no-console
+        console.log("[MMM-ChatGPTVoice] recognition ended");
+      }
+
+      // Auto-restart for always-on wake-phrase mode
+      if (self.autoRestart) {
+        setTimeout(function () {
+          try {
+            recognition.start();
+          } catch (err) {
+            if (self.config.debug) {
+              // eslint-disable-next-line no-console
+              console.error(
+                "[MMM-ChatGPTVoice] auto-restart error:",
+                err
+              );
+            }
+          }
+        }, 1000);
+      }
+    };
+
+    this.recognition = recognition;
+
+    // Try starting immediately
+    try {
+      this.recognition.start();
+    } catch (err) {
+      if (this.config.debug) {
+        // eslint-disable-next-line no-console
+        console.error("[MMM-ChatGPTVoice] start error:", err);
+      }
+    }
+
+    this.updateDom();
+  },
+
+  // ---------------------------------------------------------------------------
+  // Voice: Text-to-Speech (browser)
+  // ---------------------------------------------------------------------------
+  speak: function (text) {
+    if (
+      !text ||
+      !("speechSynthesis" in window) ||
+      typeof window.SpeechSynthesisUtterance === "undefined"
+    ) {
+      return;
+    }
+
+    const utter = new window.SpeechSynthesisUtterance(text);
+    utter.lang = this.config.language || "en-US";
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    window.speechSynthesis.cancel(); // stop any ongoing speech
+    window.speechSynthesis.speak(utter);
+  }
+});

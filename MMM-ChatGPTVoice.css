@@ -1,0 +1,40 @@
+.chatgpt-voice {
+  text-align: center;
+  padding: 6px 10px;
+}
+
+#chatgpt-voice-status {
+  margin-top: 2px;
+  margin-bottom: 4px;
+}
+
+.chatgpt-voice-indicator {
+  font-size: 24px;
+  margin: 4px 0;
+  user-select: none;
+}
+
+.chatgpt-voice-indicator.listening {
+  animation: chatgpt-pulse 1s infinite;
+}
+
+#chatgpt-voice-user,
+#chatgpt-voice-reply {
+  margin-top: 2px;
+}
+
+#chatgpt-voice-wrapper .label {
+  font-weight: 600;
+}
+
+@keyframes chatgpt-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}

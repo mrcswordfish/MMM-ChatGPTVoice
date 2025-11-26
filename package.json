@@ -1,0 +1,21 @@
+{
+  "name": "mmm-chatgptvoice",
+  "version": "1.1.0",
+  "description": "MagicMirror² module that adds a ChatGPT-powered voice assistant activated by the wake phrase 'hey gpt'.",
+  "main": "MMM-ChatGPTVoice.js",
+  "author": "Your Name <you@example.com>",
+  "license": "MIT",
+  "keywords": [
+    "magicmirror",
+    "magicmirror2",
+    "module",
+    "chatgpt",
+    "openai",
+    "voice",
+    "assistant",
+    "wake word"
+  ],
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  }
+}
